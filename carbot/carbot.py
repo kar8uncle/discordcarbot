@@ -3,6 +3,7 @@ import mimetypes
 import logging
 import operator
 import os
+import re
 from functools import reduce
 
 import discord
@@ -11,7 +12,13 @@ from line.models import TextSendMessage, ImageSendMessage, VideoSendMessage, Aud
 from line.models import (FlexSendMessage, BubbleContainer, FillerComponent, BoxComponent,
                          ImageComponent, TextComponent, IconComponent)
 
-logger = logging.getLogger(__name__).setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
+
+def group(list, group_size):
+    """ Splits the given array into an array of subarrays,
+        with each subarray having at most group_size many elements.
+    """ 
+    return [ list[start_idx:start_idx + group_size] for start_idx in range(0, len(list), group_size) ]
 
 class LineCarbot:
     token = os.environ['LINE_TOKEN']
@@ -39,23 +46,64 @@ class DiscordCarbot(discord.Client):
         # so that transform function can return more than one Line SendMessage object
         messages = reduce(operator.add, [ T(message) for T in transforms ], [])
 
-        def group_messages(messages, group_size=5):
-            """ Splits array of messages into arrays of subarrays of messages,
-                with each subarray having at most group_size many messages.
-                A group_size of 5 is the maximum that the push_message API allows up to.
-            """ 
-            return [ messages[start_idx:start_idx + group_size] for start_idx in range(0, len(messages), group_size) ]
-
-        for grouped_messages in group_messages(messages):
+        # Line only allows up to 5 messages per push_message API call,
+        # let's split the message array into bite-size subarrays in case there are more than
+        # 5 messages in the original array.
+        for grouped_messages in group(messages, 5):
             LineCarbot.api.push_message(LineCarbot.target_group_id, grouped_messages)
 
+
+    """ Regex that matches an emoji string, in its text form.
+
+        An emoji is of the form: <:(emoji name):(emoji hash)>.
+        For example, <:crown:408166031022882816> is a valid emoji
+
+        Captures the emoji hash.
+
+        Discord seems to sanitize messages so we don't have to worry about 
+        having message content in this form but is not an emoji.
+    """
+    emoji_regex = re.compile(r'<:[^:]+:([0-9]+)>')
+    """ Regex that matches a message with just emojis, in its text form.
+
+        A message that contains just emojis is a message such that there is no
+        non-emoji text in the content, except whitespaces.
+        For example, "<:rock:408166560826654730> <:crown:408166031022882816>"
+        matches this regex.
+    """
+    plain_emoji_msg_regex = re.compile(r'^(?:\s*<:[^:]+:[0-9]+>\s*)+$')
     @staticmethod
     def text_message(message):
-        # message_body_box contains a line of message
-        # TODO: when we (if ever) support inline emojis, there will be more than one message_body_box
-        message_body = ( FillerComponent() if not message.content else
-                         TextComponent(text=str(message.content), flex=0, wrap=True) )
-        message_body_box = BoxComponent(layout='baseline', contents=[ message_body ])
+        message_body_boxes = []
+
+        if not message.content:
+            # message is empty, 
+            # since Line doesn't like TextComponent with an empty string,
+            # let's just use a filler so that it looks empty
+            message_body_lines.append(FillerComponent())
+        elif DiscordCarbot.plain_emoji_msg_regex.match(message.content):
+            # message contains only emojis and no other text except whitespaces,
+            # let's use icons as the message
+            
+            emojis = DiscordCarbot.emoji_regex.findall(message.content)
+            if len(emojis) <= 10:
+                # one line can fit 6 emojis at 3xl size
+                group_size, icon_size = 6, '3xl'
+            elif len(emojis) <= 15:
+                # one line can fit 8 emojis at xxl size
+                group_size, icon_size = 8, 'xxl'
+            else:
+                # one line can fit 10 emojis at xl size,
+                # xl is actually already very small so we are not going below that
+                group_size, icon_size = 10, 'xl'
+
+            for emojis_per_line in group(emojis, group_size):
+                line_contents = [IconComponent(url='https://cdn.discordapp.com/emojis/{}.png'.format(emoji), size=icon_size) for emoji in emojis_per_line]
+                message_body_boxes.append(BoxComponent(layout='baseline', contents=line_contents))
+        else:
+            # message is a normal text message, potentially with emojis
+            message_body_boxes.append(TextComponent(text=str(message.content), flex=0, wrap=True))
+
 
         # message_author is one line of string (no wrap) that has the author name 
         # with a color as displayed in Discord
@@ -63,7 +111,7 @@ class DiscordCarbot(discord.Client):
                                        color=str(message.author.color), size='sm')
 
         # message_box contains the author and the message, stacked vertically
-        message_box = BoxComponent(layout='vertical', contents=[ message_author, message_body_box ])
+        message_box = BoxComponent(layout='vertical', contents=[ message_author ] + message_body_boxes)
 
         # avatar is an image placed on the left of the message_box
         # NOTE: avatar_url gives a webp format which Line doesn't know how to deal with.
