@@ -1,0 +1,6 @@
+[submodule "external/discord"]
+	path = external/discord
+	url = https://github.com/Rapptz/discord.py.git
+[submodule "external/line"]
+	path = external/line
+	url = https://github.com/line/line-bot-sdk-python.git
