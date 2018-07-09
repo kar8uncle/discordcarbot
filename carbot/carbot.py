@@ -110,7 +110,7 @@ class DiscordCarbot(discord.Client):
     plain_emoji_msg_regex = re.compile(r'^(?:\s*<:[^:]+:[0-9]+>\s*)+$')
 
     def text_message(self, message):
-        if message.author == self.user:
+        if message.author.bot:
             if not message.content:
                 # this message only has attachments,
                 # don't send any text message
@@ -156,8 +156,8 @@ class DiscordCarbot(discord.Client):
             for emojis_per_line in group(emojis, group_size):
                 line_contents = [IconComponent(url='https://cdn.discordapp.com/emojis/{}.png'.format(emoji), size=icon_size) for emoji in emojis_per_line]
                 message_body_boxes.append(BoxComponent(layout='baseline', contents=line_contents))
-        elif message.author == self.user:
-            # message is a normal text message, from this bot,
+        elif message.author.bot:
+            # message is a normal text message, from a bot,
             # let's not use flex because we are not adding avatar and nickname to the message
             return [ TextSendMessage(text=str(message.content)) ]
         else:
