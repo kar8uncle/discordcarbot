@@ -137,7 +137,7 @@ class DiscordCarbot(discord.Client):
             # message is empty, 
             # since Line doesn't like TextComponent with an empty string,
             # let's just use a filler so that it looks empty
-            message_body_lines.append(FillerComponent())
+            message_body_boxes.append(FillerComponent())
         elif DiscordCarbot.plain_emoji_msg_regex.match(message.content):
             # message contains only emojis and no other text except whitespaces,
             # let's use icons as the message
