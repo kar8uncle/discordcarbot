@@ -5,6 +5,7 @@ import operator
 import os
 import re
 from functools import reduce
+import aiohttp
 
 import discord
 from line import LineBotApi
@@ -33,17 +34,52 @@ class DiscordCarbot(discord.Client):
     target_channel = 'line'
 
     async def on_message(self, message):
-        if ( str(message.channel) == DiscordCarbot.target_channel and  # message came from target channel
-             message.type == discord.MessageType.default and           # message not from system
-             message.author != self.user and                           # this bot didn't send the message
-             message.author.id != DiscordCarbot.friend_bot_id          # friend bot didn't send the message
+        if message.channel.is_private:
+            # message is private, 
+            # forward it to target_channel, and to Line through another on_message event
+            await self.broadcast_from_private_channel(message)
+        elif ( str(message.channel) == DiscordCarbot.target_channel and  # message came from target channel
+               message.type == discord.MessageType.default and           # message not from system
+               message.author.id != DiscordCarbot.friend_bot_id          # friend bot didn't send the message
         ): await self.forward_message(message)
 
+
+    async def broadcast_from_private_channel(self, message):
+        # only look at servers that the author belongs in,
+        # so that no random/malicious person can send message to our Line counterpart
+        for server in filter(lambda server: message.author in server.members, self.servers):
+            try:
+                dest_channel = next(filter(lambda channel: str(channel) == self.target_channel, server.channels))
+                if message.attachments:
+                    async with aiohttp.ClientSession() as client:
+                        for attachment in message.attachments:
+                            async with client.get(attachment['url']) as r:
+                                # sending the message content together with attachments,
+                                # so that they can be deleted together :P
+                                await self.send_file(destination=dest_channel, filename=attachment['filename'],
+                                                     fp=r.content, content=message.content or None)
+                elif message.content:
+                    await self.send_message(destination=dest_channel, content=message.content)
+
+                # this message shall be forwarded to line too, 
+                # through another on_message event with author = self.user
+            except StopIteration:
+                # no target_channel in server,
+                # let's just do nothing
+                pass
+
+            logger.info('user {m.author} sent a message with content:\n'
+                        '{m.content}\n'
+                        'and attachments(filenames only):\n'
+                        '{filenames}'.format(m=message, filenames=str([a['filename'] for a in message.attachments])))
+
+
     async def forward_message(self, message):
-        transforms = [ DiscordCarbot.text_message, DiscordCarbot.attachments ]
+        transforms = [ self.text_message, self.attachments ]
         # each transform function returns a list, this line flattens the list of lists into a single list,
+        # e.g. flatten([ [a], [b, c] ]) => [a, b, c]
         # it is set up this way because one Discord message can contain multiple attachments,
-        # so that transform function can return more than one Line SendMessage object
+        # so that one transform function can return more than one Line SendMessage object
         messages = reduce(operator.add, [ T(message) for T in transforms ], [])
 
         # Line only allows up to 5 messages per push_message API call,
@@ -72,8 +108,29 @@ class DiscordCarbot(discord.Client):
         matches this regex.
     """
     plain_emoji_msg_regex = re.compile(r'^(?:\s*<:[^:]+:[0-9]+>\s*)+$')
-    @staticmethod
-    def text_message(message):
+
+    def text_message(self, message):
+        if message.author == self.user:
+            if not message.content:
+                # this message only has attachments,
+                # don't send any text message
+                return []
+
+            # don't show name if the message was sent by this bot
+            message_author = avatar = []
+        else:
+            # message_author is one line of string (no wrap) that has the author name 
+            # with a color as displayed in Discord
+            message_author = [ TextComponent(text=str(message.author.display_name), weight='bold', flex=0, 
+                                             color=str(message.author.color), size='sm') ]
+            # avatar is an image placed on the left of the message_box
+            # NOTE: avatar_url gives a webp format which Line doesn't know how to deal with.
+            #       Let's just guess the png file name from the user id and avatar hash.
+            #       default_avatar_url is a png so no guessing is needed.
+            avatar = [ ImageComponent(url=message.author.default_avatar_url if not message.author.avatar else
+                                          'https://cdn.discordapp.com/avatars/{0.id}/{0.avatar}.png?size=256'.format(message.author),
+                                      flex=0, size='xxs') ]
+
         message_body_boxes = []
 
         if not message.content:
@@ -84,7 +141,6 @@ class DiscordCarbot(discord.Client):
         elif DiscordCarbot.plain_emoji_msg_regex.match(message.content):
             # message contains only emojis and no other text except whitespaces,
             # let's use icons as the message
-            
             emojis = DiscordCarbot.emoji_regex.findall(message.content)
             if len(emojis) <= 10:
                 # one line can fit 6 emojis at 3xl size
@@ -100,29 +156,21 @@ class DiscordCarbot(discord.Client):
             for emojis_per_line in group(emojis, group_size):
                 line_contents = [IconComponent(url='https://cdn.discordapp.com/emojis/{}.png'.format(emoji), size=icon_size) for emoji in emojis_per_line]
                 message_body_boxes.append(BoxComponent(layout='baseline', contents=line_contents))
+        elif message.author == self.user:
+            # message is a normal text message, from this bot,
+            # let's not use flex because we are not adding avatar and nickname to the message
+            return [ TextSendMessage(text=str(message.content)) ]
         else:
-            # message is a normal text message, potentially with emojis
+            # message is a normal text message, from a user,
+            # let's continue building the flex boxes, as we need to show avatar and nickname
             message_body_boxes.append(TextComponent(text=str(message.content), flex=0, wrap=True))
 
 
-        # message_author is one line of string (no wrap) that has the author name 
-        # with a color as displayed in Discord
-        message_author = TextComponent(text=str(message.author.display_name), weight='bold', flex=0, 
-                                       color=str(message.author.color), size='sm')
-
         # message_box contains the author and the message, stacked vertically
-        message_box = BoxComponent(layout='vertical', contents=[ message_author ] + message_body_boxes)
-
-        # avatar is an image placed on the left of the message_box
-        # NOTE: avatar_url gives a webp format which Line doesn't know how to deal with.
-        #       Let's just guess the png file name from the user id and avatar hash.
-        #       default_avatar_url is a png so no guessing is needed.
-        avatar = ImageComponent(url=message.author.default_avatar_url if not message.author.avatar else
-                                    'https://cdn.discordapp.com/avatars/{0.id}/{0.avatar}.png?size=256'.format(message.author),
-                                flex=0, size='xxs')
+        message_box = BoxComponent(layout='vertical', contents=message_author + message_body_boxes)
 
         # message_card_box is the box that contains the avatar and the message_box, stacked horizontally
-        message_card_box = BoxComponent(layout='horizontal', spacing='md', contents=[ avatar, message_box ])
+        message_card_box = BoxComponent(layout='horizontal', spacing='md', contents=avatar + [ message_box ])
 
         # NOTE: using footer since it has the least padding; otherwise the message overall would have 
         #       too much unnecessary whitespace
@@ -131,8 +179,7 @@ class DiscordCarbot(discord.Client):
         return [ FlexSendMessage(alt_text='{author}:{body}'.format(author=message.author.display_name, body=message.content),
                                  contents=message_card_bubble) ]
 
-    @staticmethod
-    def attachments(message):
+    def attachments(self, message):
         transformed_attachments = []
         
         for attachment in message.attachments:
