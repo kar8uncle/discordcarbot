@@ -2,6 +2,8 @@
 
 import logging
 import logging.config
+import sys
+import os
 from carbot import DiscordCarbot
 
 LOGGING_CONFIG = None
@@ -29,9 +31,7 @@ def main():
     except Exception as e:
         logger.error('Caught exception: ' + str(e))
     finally:
-        # TODO: if it restarts too much eventually it can stack overflow and dies...
-        #       maybe consider using exec instead?
-        main()
+        os.execv(__file__, sys.argv)
 
 
 if __name__ == '__main__':
