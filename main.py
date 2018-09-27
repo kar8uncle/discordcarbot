@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -p
+#!/usr/bin/python3
 
 import logging
 import logging.config
@@ -28,9 +28,10 @@ logger = logging.getLogger(__name__)
 def main():
     try:
         DiscordCarbot().run(DiscordCarbot.token)
+    except SystemExit:
+        pass
     except Exception as e:
         logger.error('Caught exception: ' + str(e))
-    finally:
         os.execv(__file__, sys.argv)
 
 

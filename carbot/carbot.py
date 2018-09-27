@@ -7,7 +7,6 @@ import re
 from functools import reduce
 import aiohttp
 
-from systemd.journal import JournalHandler
 import discord
 from line import LineBotApi
 from line.models import TextSendMessage, ImageSendMessage, VideoSendMessage, AudioSendMessage
@@ -31,11 +30,24 @@ class DiscordCarbot(discord.Client):
     token = os.environ['DISCORD_TOKEN']
     # id of the bot that sends Line messages to Discord,
     # this bot should ignore messages from that bot or else it becomes an infinite feedback
-    friend_bot_id = os.environ['DISCORD_FRIEND_BOT_ID']
+    friend_bot_id = int(os.environ['DISCORD_FRIEND_BOT_ID'])
     target_channel = 'line'
 
+
+    async def on_member_update(self, before, after):
+        dest_channel = discord.utils.find(lambda channel: str(channel) == self.target_channel, after.guild.channels)
+        if dest_channel is None:
+            return
+
+        if isinstance(after.activity, discord.Streaming) and not isinstance(before.activity, discord.Streaming):
+            # user is currently streaming but not before
+            # let's broadcast it
+            await dest_channel.send(content="{user}: {name} @ {url}"
+                                    .format(user=after.display_name, name=after.activity.name, url=after.activity.url)
+                                    )
+
     async def on_message(self, message):
-        if message.channel.is_private:
+        if isinstance(message.channel, discord.DMChannel):
             # message is private, 
             # forward it to target_channel, and to Line through another on_message event
             await self.broadcast_from_private_channel(message)
@@ -46,28 +58,25 @@ class DiscordCarbot(discord.Client):
 
 
     async def broadcast_from_private_channel(self, message):
-        # only look at servers that the author belongs in,
+        # only look at guilds that the author belongs in,
         # so that no random/malicious person can send message to our Line counterpart
-        for server in filter(lambda server: message.author in server.members, self.servers):
-            try:
-                dest_channel = next(filter(lambda channel: str(channel) == self.target_channel, server.channels))
-                if message.attachments:
-                    async with aiohttp.ClientSession() as client:
-                        for attachment in message.attachments:
-                            async with client.get(attachment['url']) as r:
-                                # sending the message content together with attachments,
-                                # so that they can be deleted together :P
-                                await self.send_file(destination=dest_channel, filename=attachment['filename'],
-                                                     fp=r.content, content=message.content or None)
-                elif message.content:
-                    await self.send_message(destination=dest_channel, content=message.content)
+        for guild in filter(lambda guild: message.author in guild.members, self.guilds):
+            dest_channel = discord.utils.find(lambda channel: str(channel) == self.target_channel, guild.channels)
+            if dest_channel is None:
+                continue
 
-                # this message shall be forwarded to line too, 
-                # through another on_message event with author = self.user
-            except StopIteration:
-                # no target_channel in server,
-                # let's just do nothing
-                pass
+            if message.content:
+                await dest_channel.send(content=message.content)
+
+            if message.attachments:
+                async with aiohttp.ClientSession() as client:
+                    for attachment in message.attachments:
+                        async with client.get(attachment['url']) as r:
+                            await dest_channel.send(destination=dest_channel, 
+                                                    file=discord.File(r.content, filename=attachment['filename'])
+                                                    )
+            # this message shall be forwarded to line too, 
+            # through another on_message event with author = self.user
 
             logger.info('user {m.author} sent a message with content:\n'
                         '{m.content}\n'
@@ -88,7 +97,6 @@ class DiscordCarbot(discord.Client):
         # 5 messages in the original array.
         for grouped_messages in group(messages, 5):
             LineCarbot.api.push_message(LineCarbot.target_group_id, grouped_messages)
-
 
     """ Regex that matches an emoji string, in its text form.
 
