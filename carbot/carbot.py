@@ -205,17 +205,17 @@ class DiscordCarbot(discord.Client):
         transformed_attachments = []
         
         for attachment in message.attachments:
-            guessed_type, _ = mimetypes.guess_type(attachment['filename'])
+            guessed_type, _ = mimetypes.guess_type(attachment.filename)
             if guessed_type.startswith('image/'):
-                transformed_attachments.append(ImageSendMessage(original_content_url=attachment['url'], preview_image_url=attachment['proxy_url']))
+                transformed_attachments.append(ImageSendMessage(original_content_url=attachment.url, preview_image_url=attachment.proxy_url))
 
             elif guessed_type.startswith('audio/'):
-                transformed_attachments.append(AudioSendMessage(original_content_url=attachment['url']))
+                transformed_attachments.append(AudioSendMessage(original_content_url=attachment.url))
 
             elif guessed_type.startswith('video/'):
-                transformed_attachments.append(VideoSendMessage(original_content_url=attachment['url']))
+                transformed_attachments.append(VideoSendMessage(original_content_url=attachment.url))
 
             else:
-                logger.info('Unhandleable attachment mimetype {}, guessed from filename {}.'.format(guessed_type, attachment['filename']))
+                logger.info('Unhandleable attachment mimetype {}, guessed from filename {}.'.format(guessed_type, attachment.filename))
 
         return transformed_attachments
