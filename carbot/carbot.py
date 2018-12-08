@@ -4,11 +4,13 @@ import logging
 import operator
 import os
 import re
+import requests
 from functools import reduce
 import aiohttp
 
 import discord
 from line import LineBotApi
+from line.exceptions import LineBotApiError
 from line.models import TextSendMessage, ImageSendMessage, VideoSendMessage, AudioSendMessage
 from line.models import (FlexSendMessage, BubbleContainer, FillerComponent, BoxComponent,
                          ImageComponent, TextComponent, IconComponent)
@@ -20,6 +22,15 @@ def group(list, group_size):
         with each subarray having at most group_size many elements.
     """ 
     return [ list[start_idx:start_idx + group_size] for start_idx in range(0, len(list), group_size) ]
+
+class TwitchBroadcastAnnouncer:
+    @staticmethod
+    def subscribe(user_name):
+        response = requests.post(os.environ['TWITCH_SUBSCRIBE_URL'], data={ 'user_name' : user_name })
+        try:
+            response.raise_for_status()
+        except:
+            logger.error('Unable to subscribe for Twitch user {}'.format(user_name))
 
 class LineCarbot:
     token = os.environ['LINE_TOKEN']
@@ -42,9 +53,7 @@ class DiscordCarbot(discord.Client):
         if isinstance(after.activity, discord.Streaming) and not isinstance(before.activity, discord.Streaming):
             # user is currently streaming but not before
             # let's broadcast it
-            await dest_channel.send(content="{user}: {name} @ {url}"
-                                    .format(user=after.display_name, name=after.activity.name, url=after.activity.url)
-                                    )
+            TwitchBroadcastAnnouncer.subscribe(after.activity.twitch_name)
 
     async def on_message(self, message):
         if isinstance(message.channel, discord.DMChannel):
@@ -95,8 +104,16 @@ class DiscordCarbot(discord.Client):
         # Line only allows up to 5 messages per push_message API call,
         # let's split the message array into bite-size subarrays in case there are more than
         # 5 messages in the original array.
+
         for grouped_messages in group(messages, 5):
-            LineCarbot.api.push_message(LineCarbot.target_group_id, grouped_messages)
+            try:
+                logger.info('Sending a message to group with id {group_id}:\n{messages}'
+                            .format(group_id=str(LineCarbot.target_group_id),
+                                    messages=str(grouped_messages)))
+                LineCarbot.api.push_message(LineCarbot.target_group_id, grouped_messages)
+            except LineBotApiError as err:
+                logger.error('LineBotApiError raised:\n{error}'
+                             .format(error=str(err)))
 
     """ Regex that matches an emoji string, in its text form.
 

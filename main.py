@@ -23,15 +23,13 @@ logging.config.dictConfig({
     },
 })
 
-logger = logging.getLogger(__name__)
-
 def main():
     try:
         DiscordCarbot().run(DiscordCarbot.token)
     except SystemExit:
         pass
     except Exception as e:
-        logger.error('Caught exception: ' + str(e))
+        logging.getLogger('carbot').error('Caught exception: ' + str(e))
         os.execv(__file__, sys.argv)
 
 
